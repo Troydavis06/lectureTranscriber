@@ -264,8 +264,11 @@ class LoopbackRecorder:
             self._thread.join(timeout=5)
         with self._lock:
             if self._wav is not None:
-                if not self._paused.is_set():
-                    self._pad_drift_locked()
+                # Deliberately no drift padding here. Padding exists to keep
+                # later audio aligned with playback time, and nothing follows
+                # the end of the file -- padding would only append trailing
+                # silence, inflating the reported duration by however long the
+                # pump thread took to wind down.
                 self._wav.close()
                 self._wav = None
         if self._stream is not None:
