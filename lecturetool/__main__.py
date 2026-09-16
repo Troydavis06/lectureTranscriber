@@ -271,8 +271,14 @@ class Daemon:
         self.prune_recordings()
         self.pipeline.start()
 
-        signal.signal(signal.SIGINT, self.stop)
-        signal.signal(signal.SIGTERM, self.stop)
+        # Only the main thread may install handlers. Running the daemon from a
+        # worker thread is legitimate (tests, embedding), and there Ctrl+C is
+        # the host's business rather than ours.
+        try:
+            signal.signal(signal.SIGINT, self.stop)
+            signal.signal(signal.SIGTERM, self.stop)
+        except ValueError:
+            log.debug("Not on the main thread; skipping signal handlers")
 
         log.info("Watching Chrome on port %d. Notes go to %s",
                  self.watcher.client.port, self.cfg.notes_file)
