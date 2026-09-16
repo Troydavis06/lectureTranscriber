@@ -113,6 +113,12 @@ regenerates notes without rewatching anything:
 run.cmd --process data\recordings\2026-09-16_1430_lecture-7.wav
 ```
 
+Note that this **appends a new block** rather than replacing the original, since
+nothing here ever deletes notes you might have annotated. If you meant to replace
+the old version, delete its block from `notes.txt` yourself. The title is
+recovered from the recording's filename, so pass `--title "Real Lecture Name"` if
+you want a nicer heading.
+
 ## If something doesn't work
 
 **Notes never appear.** Check the daemon window. The most common causes are the
