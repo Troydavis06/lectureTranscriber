@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Recordings, transcripts and the notes file are personal data, not source.
+data/

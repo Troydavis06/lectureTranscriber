@@ -1,0 +1,48 @@
+# Lecture Summary Tool configuration.
+# Every value here has a default in lecturetool/config.py; this file overrides them.
+
+[paths]
+data_dir = "./data"
+
+[chrome]
+debug_port = 9222
+poll_sec = 2.0
+# Video must read as "playing" for this many consecutive polls before we start
+# recording. Debounces ad rolls and scrubbing.
+start_debounce_polls = 2
+# How long a video may stay paused before we call the lecture finished.
+pause_grace_sec = 120
+# Treat "within this many seconds of the end" as finished, since some players
+# never fire `ended`.
+end_slack_sec = 5.0
+# Videos shorter than this are ignored entirely (clips, embedded promos).
+min_video_duration_sec = 120
+# If non-empty, ONLY these host substrings can start a lecture.
+url_allowlist = []
+# Hosts that can never start a lecture.
+url_denylist = ["music.youtube.com", "open.spotify.com", "soundcloud.com"]
+
+[audio]
+# Finished recordings shorter than this are discarded without processing.
+min_lecture_sec = 180
+# Delete WAVs older than this many days. 0 disables pruning.
+keep_recordings_days = 7
+
+[whisper]
+model = "large-v3-turbo"
+compute_type = "float16"
+device = "cuda"
+language = "en"
+beam_size = 5
+vad_filter = true
+
+[notes]
+model = "qwen3:14b"
+host = "http://127.0.0.1:11434"
+num_ctx = 16384
+temperature = 0.2
+# Approximate transcript tokens per map-stage chunk.
+chunk_tokens = 3500
+# Words of overlap between consecutive chunks so a topic split across a
+# boundary still has context on both sides.
+chunk_overlap_words = 200

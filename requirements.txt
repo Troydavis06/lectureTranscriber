@@ -1,0 +1,8 @@
+faster-whisper>=1.2.0
+PyAudioWPatch>=0.2.12.8
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9.0.0
+numpy
+websocket-client
+requests
+ollama
