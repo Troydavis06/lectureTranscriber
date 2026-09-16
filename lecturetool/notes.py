@@ -32,22 +32,30 @@ Rules:
 - One block per topic. Start each block with its [MM:SS] timestamp, then a short topic name.
 - Under each block, terse bullets. Fragments, not sentences. No filler verbs.
 - Copy formulas, definitions, numbers and names EXACTLY as stated. Never paraphrase a formula.
+- Keep worked examples: the setup numbers and the final answer.
 - Mark the single most testable fact in a block with "KEY:" at the start of that bullet.
 - If the lecturer flags something as important, examinable, a common mistake, or homework, keep it.
 - Omit greetings, admin chatter, tangents and repetition.
 - Output ONLY the blocks. No preamble, no closing summary, no markdown headers, no bold.
 """
 
+# The worked example below is deliberately from an unrelated subject. An earlier
+# version used the same domain as the material under test, and the model simply
+# echoed the example back as if it were a real topic block.
 _MAP_PROMPT = """\
 You are writing revision notes from part of a lecture transcript.
 
 {rules}
-Format exactly like this:
+Use exactly this shape. It is a FORMAT SAMPLE from an unrelated subject --
+never copy its wording or topics into your answer:
 
-[03:20] Why greedy fails
-  - Greedy by finish time takes 2 short intervals worth 20
-  - Optimal takes 1 long interval worth 100
-  - KEY: greedy commits early, cannot reconsider an earlier choice
+[04:10] Enzyme saturation
+  - Rate rises with substrate until active sites are full
+  - V_max reached when all enzyme is bound
+  - KEY: K_m is the substrate concentration at half V_max
+
+Cover the whole excerpt, from its first timestamp through to its last. Do not
+stop early.
 
 Transcript part {index} of {total}:
 ---
@@ -92,6 +100,10 @@ def _chunk_transcript(transcript: Transcript, chunk_tokens: int, overlap_words: 
     both.
     """
     target_words = max(200, int(chunk_tokens * _WORDS_PER_TOKEN))
+    # Overlap has to stay a small fraction of the window. If it approaches the
+    # window size, consecutive chunks are nearly identical and the map stage
+    # emits the same topic over and over.
+    overlap_words = min(overlap_words, int(target_words * 0.15))
     chunks: list[str] = []
     current: list[dict] = []
     current_words = 0
@@ -121,6 +133,87 @@ def _chunk_transcript(transcript: Transcript, chunk_tokens: int, overlap_words: 
     if current:
         chunks.append(render(current))
     return chunks
+
+
+_BLOCK_START = re.compile(r"^\s*\[(\d+):(\d{2})(?::(\d{2}))?\]")
+
+
+def _parse_timestamp(line: str) -> float | None:
+    """Leading [MM:SS] or [H:MM:SS] of a block header, in seconds."""
+    match = _BLOCK_START.match(line)
+    if not match:
+        return None
+    a, b, c = match.group(1), match.group(2), match.group(3)
+    if c is None:
+        return int(a) * 60 + int(b)
+    return int(a) * 3600 + int(b) * 60 + int(c)
+
+
+def _split_blocks(text: str) -> list[tuple[float, str]]:
+    """Split note text into (timestamp, block) pairs on block headers."""
+    blocks: list[tuple[float, str]] = []
+    current: list[str] = []
+    current_ts: float | None = None
+
+    def flush() -> None:
+        if current and current_ts is not None:
+            body = "\n".join(current).rstrip()
+            if body:
+                blocks.append((current_ts, body))
+
+    for line in text.splitlines():
+        ts = _parse_timestamp(line)
+        if ts is not None:
+            flush()
+            current = [line.strip()]
+            current_ts = ts
+        elif current:
+            current.append(line.rstrip())
+    flush()
+    return blocks
+
+
+def _block_fingerprint(block: str) -> str:
+    """Identity of a block ignoring timestamp, case and punctuation.
+
+    Used to collapse the near-duplicates that chunk overlap produces.
+    """
+    without_header = _BLOCK_START.sub("", block, count=1)
+    words = re.findall(r"[a-z0-9]+", without_header.lower())
+    return " ".join(words)
+
+
+def dedupe_blocks(text: str) -> str:
+    """Order blocks chronologically and drop repeats.
+
+    A deterministic safety net: the model is asked to do this in the reduce
+    pass, but when that pass is skipped or rejected this keeps the output
+    readable instead of leaving the same topic repeated per chunk.
+    """
+    blocks = _split_blocks(text)
+    if not blocks:
+        return text.strip()
+
+    blocks.sort(key=lambda pair: pair[0])
+    seen: dict[str, int] = {}
+    kept: list[tuple[float, str]] = []
+    for ts, block in blocks:
+        fingerprint = _block_fingerprint(block)
+        if not fingerprint:
+            continue
+        if fingerprint in seen:
+            continue
+        # A later block whose content is contained in one already kept adds
+        # nothing; overlap makes these common.
+        if any(fingerprint in _block_fingerprint(k) for _, k in kept):
+            continue
+        seen[fingerprint] = ts
+        kept.append((ts, block))
+    return "\n\n".join(block for _, block in kept)
+
+
+def _count_blocks(text: str) -> int:
+    return len(_split_blocks(text))
 
 
 def _strip_model_noise(text: str) -> str:
@@ -215,24 +308,65 @@ class NoteGenerator:
                 raise NotesError("Model returned nothing usable")
 
             if len(blocks) == 1:
-                body = blocks[0]
+                body = dedupe_blocks(blocks[0])
             else:
-                log.info("  reduce %d blocks", len(blocks))
-                merged = self._generate(
-                    _REDUCE_PROMPT.format(
-                        rules=_SHARED_RULES, blocks="\n\n".join(blocks)
-                    )
-                )
-                body = _strip_model_noise(merged)
-                # A reduce that collapses everything is worse than no reduce;
-                # keep the map output if the merge clearly lost content.
-                if len(body) < 0.3 * len("\n\n".join(blocks)):
-                    log.warning("Reduce pass lost too much content; keeping map output")
-                    body = "\n\n".join(blocks)
+                # Collapse overlap duplicates first: it shortens the reduce
+                # prompt and puts the topics in order before the model sees them.
+                combined = dedupe_blocks("\n\n".join(blocks))
+                body = self._reduce(combined)
         finally:
             self.unload()
 
         return NotesResult(body=body.strip(), chunks=len(chunks), model=self.model)
+
+    def _reduce(self, combined: str) -> str:
+        """Merge map-stage blocks, batching so the prompt always fits num_ctx."""
+        fallback = combined
+        # Leave room for the rules, the instructions and the model's own output.
+        budget_words = int(self.num_ctx * _WORDS_PER_TOKEN * 0.5)
+
+        blocks = _split_blocks(combined)
+        groups: list[list[str]] = [[]]
+        group_words = 0
+        for _, block in blocks:
+            words = len(block.split())
+            if groups[-1] and group_words + words > budget_words:
+                groups.append([])
+                group_words = 0
+            groups[-1].append(block)
+            group_words += words
+
+        merged_parts: list[str] = []
+        for index, group in enumerate(groups, start=1):
+            if not group:
+                continue
+            if len(groups) > 1:
+                log.info("  reduce batch %d/%d", index, len(groups))
+            else:
+                log.info("  reduce %d blocks", len(blocks))
+            raw = self._generate(
+                _REDUCE_PROMPT.format(rules=_SHARED_RULES, blocks="\n\n".join(group))
+            )
+            cleaned = _strip_model_noise(raw)
+            # Reject only a degenerate merge. A good reduce over overlapping
+            # chunks is *expected* to shrink the text a lot, so length is the
+            # wrong signal -- an earlier version used it and kept throwing away
+            # correct merges in favour of repetitive map output.
+            if _count_blocks(cleaned) < 2:
+                log.warning(
+                    "Reduce batch %d returned %d block(s); keeping its map output",
+                    index,
+                    _count_blocks(cleaned),
+                )
+                merged_parts.append("\n\n".join(group))
+            else:
+                merged_parts.append(cleaned)
+
+        result = dedupe_blocks("\n\n".join(merged_parts))
+        if _count_blocks(result) < 2:
+            log.warning("Reduce produced nothing usable; keeping map output")
+            return fallback
+        return result
 
 
 def main() -> int:
