@@ -89,17 +89,34 @@ class Pipeline:
         ]
         log.info("Transcribing %s", job.slug)
         started = time.monotonic()
-        result = subprocess.run(
+        # Stream the child's stderr instead of capturing it wholesale: a long
+        # lecture takes minutes and silence looks like a hang. The tail is kept
+        # so a failure still reports something useful.
+        tail: list[str] = []
+        process = subprocess.Popen(
             cmd,
             cwd=str(self.cfg.root),
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
         )
-        if result.returncode != 0:
+        assert process.stderr is not None
+        for line in process.stderr:
+            line = line.rstrip()
+            if not line:
+                continue
+            tail.append(line)
+            del tail[:-40]
+            if " INFO " in line or " ERROR " in line or " WARNING " in line:
+                log.info("  [whisper] %s", line.split("  ", 1)[-1].strip())
+        returncode = process.wait()
+
+        if returncode != 0:
             log.error(
-                "Transcription failed (exit %d):\n%s",
-                result.returncode,
-                (result.stderr or "").strip()[-2000:],
+                "Transcription failed (exit %d):\n%s", returncode, "\n".join(tail[-20:])
             )
             return None
 

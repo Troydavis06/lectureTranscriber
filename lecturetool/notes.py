@@ -242,7 +242,8 @@ class NoteGenerator:
         self.temperature = float(notes.get("temperature", 0.2))
         self.chunk_tokens = int(notes.get("chunk_tokens", 3500))
         self.overlap_words = int(notes.get("chunk_overlap_words", 200))
-        self.client = ollama.Client(host=notes.get("host", "http://127.0.0.1:11434"))
+        self.host = notes.get("host", "http://127.0.0.1:11434")
+        self.client = ollama.Client(host=self.host)
 
     def _generate(self, prompt: str, keep_alive: str | int = "5m") -> str:
         try:
@@ -267,7 +268,7 @@ class NoteGenerator:
             raise NotesError(f"Ollama error: {exc}") from exc
         except Exception as exc:  # noqa: BLE001 - connection refused etc.
             raise NotesError(
-                f"Could not reach Ollama at {self.client._client.base_url}: {exc}"
+                f"Could not reach Ollama at {self.host}: {exc}. Is `ollama serve` running?"
             ) from exc
         return response.get("response", "")
 
