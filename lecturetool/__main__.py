@@ -26,7 +26,7 @@ from .audio_capture import CaptureError, LoopbackRecorder, wav_duration
 from .chrome_watch import ChromeNotRunning, Event, LectureWatcher, VideoState
 from .notes import NoteGenerator, NotesError
 from .transcribe import Transcript
-from .util import clean_title, fmt_duration, setup_logging, stamped_slug
+from .util import clean_title, fmt_duration, fmt_timestamp, setup_logging, stamped_slug
 from .writer import LectureMeta, append_notes
 
 log = logging.getLogger("daemon")
@@ -37,6 +37,11 @@ class Job:
     wav: Path
     slug: str
     meta: LectureMeta
+    # Playback position when recording began. Detection needs a couple of polls
+    # to debounce, so recording starts several seconds into the video; without
+    # this every note timestamp points slightly earlier than the moment it
+    # describes, which defeats using them to jump back into the lecture.
+    offset_sec: float = 0.0
 
 
 class Pipeline:
@@ -133,6 +138,13 @@ class Pipeline:
             log.error("No transcript for %s; leaving the WAV in place", job.slug)
             return
 
+        if job.offset_sec >= 1.0:
+            log.info(
+                "Shifting timestamps by +%.0fs to match video position",
+                job.offset_sec,
+            )
+            transcript.shift(job.offset_sec)
+
         started = time.monotonic()
         try:
             result = self._notes.generate(transcript)
@@ -155,6 +167,7 @@ class Daemon:
         self.recorder: LoopbackRecorder | None = None
         self.current: LectureMeta | None = None
         self.current_slug: str | None = None
+        self.current_offset = 0.0
         self._stop = threading.Event()
 
     # --- event handling ------------------------------------------------
@@ -187,16 +200,21 @@ class Daemon:
 
         self.recorder = recorder
         self.current_slug = slug
+        self.current_offset = max(0.0, state.position)
         self.current = LectureMeta(
             title=title, url=state.url, duration_sec=0.0, recorded_at=now
         )
-        log.info("Recording lecture %r", title)
+        log.info(
+            "Recording lecture %r from %s in", title, fmt_timestamp(self.current_offset)
+        )
 
     def _finish_recording(self, state: VideoState) -> None:
         recorder, meta, slug = self.recorder, self.current, self.current_slug
+        offset = self.current_offset
         self.recorder = None
         self.current = None
         self.current_slug = None
+        self.current_offset = 0.0
         if recorder is None or meta is None or slug is None:
             return
 
@@ -221,7 +239,9 @@ class Daemon:
             recorder.path.unlink(missing_ok=True)
             return
 
-        self.pipeline.submit(Job(wav=recorder.path, slug=slug, meta=meta))
+        self.pipeline.submit(
+            Job(wav=recorder.path, slug=slug, meta=meta, offset_sec=offset)
+        )
 
     # --- housekeeping ---------------------------------------------------
     def prune_recordings(self) -> None:

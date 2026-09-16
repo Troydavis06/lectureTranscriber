@@ -96,6 +96,22 @@ check("hour parsed and ordered",
 print("dedupe_blocks: passthrough when no blocks")
 check("no blocks", dedupe_blocks("just some prose"), "just some prose")
 
+print("transcript shift")
+from lecturetool.transcribe import Transcript  # noqa: E402 - keeps cuda import late
+
+t = Transcript(source="x", duration=10.0, language="en",
+               segments=[{"start": 0.0, "end": 2.0, "text": "a"},
+                         {"start": 2.0, "end": 4.0, "text": "b"}])
+t.shift(7.5)
+check("first start shifted", t.segments[0]["start"], 7.5)
+check("first end shifted", t.segments[0]["end"], 9.5)
+check("second start shifted", t.segments[1]["start"], 9.5)
+check("rendered timestamp", t.to_timestamped_text().splitlines()[0], "[00:07] a")
+t.shift(0)
+check("zero shift is a no-op", t.segments[0]["start"], 7.5)
+t.shift(-5)
+check("negative shift is a no-op", t.segments[0]["start"], 7.5)
+
 print("writer")
 meta = LectureMeta(
     title="Lecture 7 - Dynamic Programming",

@@ -45,6 +45,18 @@ class Transcript:
     def word_count(self) -> int:
         return len(self.text.split())
 
+    def shift(self, seconds: float) -> None:
+        """Move every segment later by `seconds`.
+
+        Used to line timestamps up with playback position when recording began
+        part-way into a video.
+        """
+        if seconds <= 0:
+            return
+        for segment in self.segments:
+            segment["start"] = round(segment["start"] + seconds, 2)
+            segment["end"] = round(segment["end"] + seconds, 2)
+
     def to_timestamped_text(self) -> str:
         return "\n".join(
             f"[{fmt_timestamp(s['start'])}] {s['text'].strip()}" for s in self.segments
