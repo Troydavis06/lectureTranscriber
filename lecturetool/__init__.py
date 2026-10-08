@@ -1,3 +1,3 @@
-"""Local lecture -> transcript -> notes pipeline."""
+"""Local lecture capture and transcription: Chrome -> WAV -> transcript."""
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

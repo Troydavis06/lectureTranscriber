@@ -1,4 +1,4 @@
-# Lecture Summary Tool configuration.
+# Lecture Transcriber configuration.
 # Every value here has a default in lecturetool/config.py; this file overrides them.
 
 [paths]
@@ -23,7 +23,7 @@ url_allowlist = []
 url_denylist = ["music.youtube.com", "open.spotify.com", "soundcloud.com"]
 
 [audio]
-# Finished recordings shorter than this are discarded without processing.
+# Finished recordings shorter than this are discarded without transcribing.
 min_lecture_sec = 180
 # Delete WAVs older than this many days. 0 disables pruning.
 keep_recordings_days = 7
@@ -34,15 +34,6 @@ compute_type = "float16"
 device = "cuda"
 language = "en"
 beam_size = 5
+# Skip silence before decoding. Faster, and it stops Whisper hallucinating
+# words into the gaps.
 vad_filter = true
-
-[notes]
-model = "qwen3:14b"
-host = "http://127.0.0.1:11434"
-num_ctx = 16384
-temperature = 0.2
-# Approximate transcript tokens per map-stage chunk.
-chunk_tokens = 3500
-# Words of overlap between consecutive chunks so a topic split across a
-# boundary still has context on both sides.
-chunk_overlap_words = 200

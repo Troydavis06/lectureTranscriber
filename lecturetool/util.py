@@ -1,4 +1,4 @@
-"""Small shared helpers: slugs, timestamps, logging."""
+"""Small shared helpers: slugs, timestamps, WAV length, logging."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ import logging
 import re
 import sys
 import unicodedata
+import wave
 from datetime import datetime
+from pathlib import Path
 
 # Trailing noise Chrome titles collect, stripped so the note heading reads
 # like a lecture name and not a browser tab.
@@ -46,6 +48,19 @@ def stamped_slug(title: str, when: datetime | None = None) -> str:
     return f"{when:%Y-%m-%d_%H%M}_{slugify(title)}"
 
 
+def slug_title(slug: str) -> str:
+    """Best-effort title from a stamped slug, for when none was supplied.
+
+    `2026-09-16_1430_lecture-7-dynamic-programming` -> `Lecture 7 Dynamic
+    Programming`. Anything that is not a stamped slug is returned unchanged, so
+    a hand-named WAV keeps its own name.
+    """
+    parts = slug.split("_", 2)
+    if len(parts) != 3 or not parts[2]:
+        return slug
+    return parts[2].replace("-", " ").title()
+
+
 def fmt_timestamp(seconds: float) -> str:
     """Seconds -> `MM:SS`, or `H:MM:SS` past an hour."""
     seconds = max(0, int(seconds))
@@ -66,6 +81,14 @@ def fmt_duration(seconds: float) -> str:
     if hours:
         return f"{hours} h {minutes:02d} min"
     return f"{minutes} min"
+
+
+def wav_duration(path: Path) -> float:
+    """Length of a WAV in seconds. Lives here so the transcriber can read it
+    without importing the capture stack."""
+    with wave.open(str(path), "rb") as wf:
+        rate = wf.getframerate()
+        return wf.getnframes() / rate if rate else 0.0
 
 
 def setup_logging(verbose: bool = False) -> None:

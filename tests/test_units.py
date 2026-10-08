@@ -1,18 +1,27 @@
-"""Checks for the pure-function pieces: block dedupe, titles, writer output.
+"""Checks for the pure-function pieces: titles, timestamps, transcript output.
 
 Run with:  .venv\\Scripts\\python.exe tests\\test_units.py
-No test framework needed, and nothing here touches the GPU, Chrome or Ollama.
+No test framework needed, and nothing here touches the GPU or Chrome.
 """
+import json
 import sys
 import tempfile
+import wave
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lecturetool.notes import _count_blocks, dedupe_blocks
-from lecturetool.util import clean_title, fmt_duration, fmt_timestamp, stamped_slug
-from lecturetool.writer import LectureMeta, append_notes, format_entry
+from lecturetool.util import (
+    clean_title,
+    fmt_duration,
+    fmt_timestamp,
+    slug_title,
+    slugify,
+    stamped_slug,
+    wav_duration,
+)
+from lecturetool.writer import LectureMeta, format_transcript, transcript_json, write_transcript
 
 failures = []
 
@@ -42,98 +51,104 @@ check("dur min", fmt_duration(3120), "52 min")
 check("dur hour", fmt_duration(6420), "1 h 47 min")
 check("dur sec", fmt_duration(48), "48 s")
 
-print("slug")
+print("slugs")
 check("stamped", stamped_slug("Lecture 7: Dynamic Programming!", datetime(2026, 9, 16, 14, 30)),
       "2026-09-16_1430_lecture-7-dynamic-programming")
+check("non-ascii stripped", slugify("Café Lecture — Intro"), "cafe-lecture-intro")
+check("empty falls back", slugify(""), "lecture")
 
-print("dedupe_blocks: ordering")
-unordered = """\
-[02:00] Later topic
-  - b
-
-[00:30] Earlier topic
-  - a
-"""
-check("sorted by timestamp",
-      dedupe_blocks(unordered),
-      "[00:30] Earlier topic\n  - a\n\n[02:00] Later topic\n  - b")
-
-print("dedupe_blocks: duplicates")
-dupes = """\
-[00:30] Memoization
-  - store each answer the first time
-
-[00:35] Memoization
-  - Store each answer the first time.
-
-[01:00] Bottom up
-  - fills array upward
-"""
-check("duplicate collapsed", _count_blocks(dedupe_blocks(dupes)), 2)
-
-print("dedupe_blocks: contained block dropped")
-contained = """\
-[00:30] Recurrence
-  - OPT(i) = max(OPT(i-1), v_i + OPT(p(i)))
-  - two cases: skip or take
-
-[00:40] Recurrence
-  - OPT(i) = max(OPT(i-1), v_i + OPT(p(i)))
-"""
-check("contained dropped", _count_blocks(dedupe_blocks(contained)), 1)
-
-print("dedupe_blocks: hour-format timestamps")
-hourly = """\
-[1:05:00] Late topic
-  - z
-
-[00:10] Early topic
-  - a
-"""
-check("hour parsed and ordered",
-      dedupe_blocks(hourly).splitlines()[0], "[00:10] Early topic")
-
-print("dedupe_blocks: passthrough when no blocks")
-check("no blocks", dedupe_blocks("just some prose"), "just some prose")
+print("slug_title")
+check("round trip", slug_title("2026-09-16_1430_lecture-7-dynamic-programming"),
+      "Lecture 7 Dynamic Programming")
+check("hand-named kept", slug_title("my-own-recording"), "my-own-recording")
+check("stamp only kept", slug_title("2026-09-16_1430"), "2026-09-16_1430")
 
 print("transcript shift")
 from lecturetool.transcribe import Transcript  # noqa: E402 - keeps cuda import late
 
-t = Transcript(source="x", duration=10.0, language="en",
-               segments=[{"start": 0.0, "end": 2.0, "text": "a"},
-                         {"start": 2.0, "end": 4.0, "text": "b"}])
+
+def sample() -> Transcript:
+    return Transcript(
+        source="x.wav",
+        duration=10.0,
+        language="en",
+        segments=[{"start": 0.0, "end": 2.0, "text": "first line"},
+                  {"start": 2.0, "end": 4.0, "text": "second line"}],
+    )
+
+
+t = sample()
 t.shift(7.5)
 check("first start shifted", t.segments[0]["start"], 7.5)
 check("first end shifted", t.segments[0]["end"], 9.5)
 check("second start shifted", t.segments[1]["start"], 9.5)
-check("rendered timestamp", t.to_timestamped_text().splitlines()[0], "[00:07] a")
+check("rendered timestamp", t.to_timestamped_text().splitlines()[0], "[00:07] first line")
 t.shift(0)
 check("zero shift is a no-op", t.segments[0]["start"], 7.5)
 t.shift(-5)
 check("negative shift is a no-op", t.segments[0]["start"], 7.5)
 
-print("writer")
+print("transcript text and json round trip")
+t = sample()
+check("text joins segments", t.text, "first line second line")
+check("word count", t.word_count, 4)
+check("reloaded segments", Transcript.from_json(t.to_json()).segments, t.segments)
+
+print("format_transcript")
 meta = LectureMeta(
     title="Lecture 7 - Dynamic Programming",
     url="https://example.edu/lec7",
     duration_sec=3120,
     recorded_at=datetime(2026, 9, 16, 14, 30),
 )
-entry = format_entry(meta, "[00:00] Topic\n  - point")
+entry = format_transcript(meta, sample())
 check("header has title", "Lecture 7 - Dynamic Programming" in entry, True)
 check("header has duration", "52 min" in entry, True)
 check("header has url", "https://example.edu/lec7" in entry, True)
 check("header has date", "2026-09-16 14:30" in entry, True)
+check("body has segments", "[00:00] first line" in entry, True)
 
+no_url = LectureMeta(title="Lecture 8", url="", duration_sec=60,
+                     recorded_at=datetime(2026, 9, 18, 9, 5))
+check("no trailing separator without a url",
+      format_transcript(no_url, sample()).splitlines()[2], "2026-09-18 09:05 | 1 min")
+
+print("transcript_json carries metadata")
+payload = transcript_json(meta, sample())
+check("title", payload["title"], "Lecture 7 - Dynamic Programming")
+check("recorded_at iso", payload["recorded_at"], "2026-09-16T14:30:00")
+check("duration", payload["duration_sec"], 3120)
+check("segments kept", len(payload["segments"]), 2)
+
+print("write_transcript")
 with tempfile.TemporaryDirectory() as tmp:
-    notes_file = Path(tmp) / "notes.txt"
-    check("first append", append_notes(notes_file, meta, "[00:00] A\n  - x"), True)
-    check("duplicate refused", append_notes(notes_file, meta, "[00:00] A\n  - x"), False)
-    other = LectureMeta(title="Lecture 8 - Flows", url="", duration_sec=2400,
-                        recorded_at=datetime(2026, 9, 18, 14, 30))
-    check("different lecture appends", append_notes(notes_file, other, "[00:00] B\n  - y"), True)
-    content = notes_file.read_text(encoding="utf-8")
-    check("both present", content.count("=" * 72), 4)
+    outdir = Path(tmp)
+    text_path, json_path = write_transcript(outdir, "lec7", meta, sample())
+    check("txt written", text_path.name, "lec7.txt")
+    check("json written", json_path.name, "lec7.json")
+    check("txt readable", "[00:02] second line" in text_path.read_text(encoding="utf-8"), True)
+    reloaded = json.loads(json_path.read_text(encoding="utf-8"))
+    check("json parses", reloaded["title"], "Lecture 7 - Dynamic Programming")
+    check("json segments", len(reloaded["segments"]), 2)
+
+    # Re-transcribing a lecture replaces its transcript rather than piling up.
+    longer = sample()
+    longer.segments.append({"start": 4.0, "end": 6.0, "text": "third line"})
+    write_transcript(outdir, "lec7", meta, longer)
+    check("one txt per slug", len(list(outdir.glob("*.txt"))), 1)
+    check("no temp files left", list(outdir.glob("*.tmp")), [])
+    check("overwritten in place",
+          len(json.loads(json_path.read_text(encoding="utf-8"))["segments"]), 3)
+
+print("wav_duration")
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "quiet.wav"
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(48000)
+        wf.writeframes(b"\x00" * (48000 * 2 * 2 * 3))  # 3 seconds
+    check("three seconds", round(wav_duration(path), 3), 3.0)
 
 print()
 if failures:

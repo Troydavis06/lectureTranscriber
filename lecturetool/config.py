@@ -39,14 +39,6 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "beam_size": 5,
         "vad_filter": True,
     },
-    "notes": {
-        "model": "qwen3:14b",
-        "host": "http://127.0.0.1:11434",
-        "num_ctx": 16384,
-        "temperature": 0.2,
-        "chunk_tokens": 3500,
-        "chunk_overlap_words": 200,
-    },
 }
 
 
@@ -76,10 +68,6 @@ class Config:
     @property
     def transcripts_dir(self) -> Path:
         return self.data_dir / "transcripts"
-
-    @property
-    def notes_file(self) -> Path:
-        return self.data_dir / "notes.txt"
 
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.recordings_dir, self.transcripts_dir):

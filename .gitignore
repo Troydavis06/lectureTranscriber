@@ -2,5 +2,5 @@
 __pycache__/
 *.pyc
 
-# Recordings, transcripts and the notes file are personal data, not source.
+# Recordings and transcripts are personal course material, not source.
 data/

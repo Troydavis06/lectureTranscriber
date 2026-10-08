@@ -1,6 +1,6 @@
-"""The daemon: watch Chrome, record, transcribe, write notes.
+"""The daemon: watch Chrome, record what plays, transcribe it.
 
-Recording and processing are deliberately decoupled. Chrome events drive the
+Recording and transcription are deliberately decoupled. Chrome events drive the
 recorder on the main thread; finished recordings go onto a queue that a single
 worker thread drains. That way a lecture starting while the previous one is
 still being transcribed is still captured -- back-to-back lectures do not drop
@@ -22,12 +22,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import config as config_mod
-from .audio_capture import CaptureError, LoopbackRecorder, wav_duration
-from .chrome_watch import ChromeNotRunning, Event, LectureWatcher, VideoState
-from .notes import NoteGenerator, NotesError
-from .transcribe import Transcript
-from .util import clean_title, fmt_duration, fmt_timestamp, setup_logging, stamped_slug
-from .writer import LectureMeta, append_notes
+from .audio_capture import CaptureError, LoopbackRecorder
+from .chrome_watch import Event, LectureWatcher, VideoState
+from .util import (
+    clean_title,
+    fmt_duration,
+    fmt_timestamp,
+    setup_logging,
+    slug_title,
+    stamped_slug,
+    wav_duration,
+)
+from .writer import LectureMeta
 
 log = logging.getLogger("daemon")
 
@@ -39,26 +45,25 @@ class Job:
     meta: LectureMeta
     # Playback position when recording began. Detection needs a couple of polls
     # to debounce, so recording starts several seconds into the video; without
-    # this every note timestamp points slightly earlier than the moment it
-    # describes, which defeats using them to jump back into the lecture.
+    # this every transcript timestamp points slightly earlier than the words it
+    # labels, which defeats using them to jump back into the lecture.
     offset_sec: float = 0.0
 
 
 class Pipeline:
-    """Processes recordings into notes, one at a time."""
+    """Turns recordings into transcripts, one at a time."""
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
         self.queue: queue.Queue[Job | None] = queue.Queue()
         self.thread = threading.Thread(target=self._run, name="pipeline", daemon=True)
-        self._notes = NoteGenerator(cfg)
 
     def start(self) -> None:
         self.thread.start()
 
     def submit(self, job: Job) -> None:
         self.queue.put(job)
-        log.info("Queued %s for processing (%d waiting)", job.slug, self.queue.qsize())
+        log.info("Queued %s for transcription (%d waiting)", job.slug, self.queue.qsize())
 
     def shutdown(self, timeout: float = 5.0) -> int:
         """Signal the worker to stop; returns how many jobs were left unprocessed."""
@@ -79,9 +84,12 @@ class Pipeline:
             finally:
                 self.queue.task_done()
 
-    # --- stages --------------------------------------------------------
-    def transcribe(self, job: Job) -> Transcript | None:
-        """Shell out to the transcriber so its VRAM is freed on process exit."""
+    def process(self, job: Job) -> Path | None:
+        """Transcribe one recording; returns the transcript path, or None.
+
+        Shells out so the transcriber's VRAM is handed back on process exit --
+        see the module docstring in transcribe.py.
+        """
         outdir = self.cfg.transcripts_dir
         cmd = [
             sys.executable,
@@ -91,6 +99,14 @@ class Pipeline:
             str(outdir),
             "--slug",
             job.slug,
+            "--title",
+            job.meta.title,
+            "--url",
+            job.meta.url,
+            "--recorded-at",
+            job.meta.recorded_at.isoformat(timespec="seconds"),
+            "--offset",
+            f"{job.offset_sec:.2f}",
         ]
         log.info("Transcribing %s", job.slug)
         started = time.monotonic()
@@ -123,39 +139,21 @@ class Pipeline:
             log.error(
                 "Transcription failed (exit %d):\n%s", returncode, "\n".join(tail[-20:])
             )
+            log.error("The recording is kept at %s", job.wav)
             return None
 
-        json_path = outdir / f"{job.slug}.json"
-        if not json_path.is_file():
-            log.error("Transcriber reported success but %s is missing", json_path)
+        text_path = outdir / f"{job.slug}.txt"
+        if not text_path.is_file():
+            log.error("Transcriber reported success but %s is missing", text_path)
             return None
-        log.info("Transcribed in %s", fmt_duration(time.monotonic() - started))
-        return Transcript.load(json_path)
 
-    def process(self, job: Job) -> None:
-        transcript = self.transcribe(job)
-        if transcript is None or not transcript.segments:
-            log.error("No transcript for %s; leaving the WAV in place", job.slug)
-            return
-
-        if job.offset_sec >= 1.0:
-            log.info(
-                "Shifting timestamps by +%.0fs to match video position",
-                job.offset_sec,
-            )
-            transcript.shift(job.offset_sec)
-
-        started = time.monotonic()
-        try:
-            result = self._notes.generate(transcript)
-        except NotesError as exc:
-            log.error("Note generation failed for %s: %s", job.slug, exc)
-            log.error("The transcript is kept at %s/%s.txt", self.cfg.transcripts_dir, job.slug)
-            return
-        log.info("Notes written in %s", fmt_duration(time.monotonic() - started))
-
-        append_notes(self.cfg.notes_file, job.meta, result.body)
-        log.info("Done: %r -> %s", job.meta.title, self.cfg.notes_file.name)
+        log.info(
+            "Done in %s: %r -> %s",
+            fmt_duration(time.monotonic() - started),
+            job.meta.title,
+            text_path,
+        )
+        return text_path
 
 
 class Daemon:
@@ -280,8 +278,8 @@ class Daemon:
         except ValueError:
             log.debug("Not on the main thread; skipping signal handlers")
 
-        log.info("Watching Chrome on port %d. Notes go to %s",
-                 self.watcher.client.port, self.cfg.notes_file)
+        log.info("Watching Chrome on port %d. Transcripts go to %s",
+                 self.watcher.client.port, self.cfg.transcripts_dir)
         log.info("Start Chrome with launch_chrome.cmd, then just play a lecture.")
 
         try:
@@ -308,7 +306,7 @@ class Daemon:
         pending = self.pipeline.queue.qsize()
         if pending:
             log.warning(
-                "%d recording(s) still queued. Re-run them with: "
+                "%d recording(s) still queued. Transcribe them with: "
                 "run.cmd --process data\\recordings\\<file>.wav",
                 pending,
             )
@@ -319,41 +317,33 @@ class Daemon:
 
 
 def process_one(cfg, wav: Path, title: str | None) -> int:
-    """Reprocess a saved recording, e.g. after tweaking the notes prompt."""
+    """Transcribe a saved recording, e.g. one the daemon left queued."""
     if not wav.is_file():
         log.error("No such recording: %s", wav)
         return 1
 
     cfg.ensure_dirs()
     # Recover the original title and time from the stamped slug when possible.
-    stem = wav.stem
-    recorded_at = datetime.fromtimestamp(wav.stat().st_mtime)
-    derived_title = title
-    if derived_title is None:
-        parts = stem.split("_", 2)
-        derived_title = parts[2].replace("-", " ").title() if len(parts) == 3 else stem
-
     meta = LectureMeta(
-        title=derived_title,
+        title=title or slug_title(wav.stem),
         url="",
         duration_sec=wav_duration(wav),
-        recorded_at=recorded_at,
+        recorded_at=datetime.fromtimestamp(wav.stat().st_mtime),
     )
-    pipeline = Pipeline(cfg)
-    pipeline.process(Job(wav=wav, slug=stem, meta=meta))
-    return 0
+    result = Pipeline(cfg).process(Job(wav=wav, slug=wav.stem, meta=meta))
+    return 0 if result is not None else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lecturetool",
-        description="Watch Chrome, transcribe lectures, append notes.",
+        description="Watch Chrome and transcribe the lectures that play.",
     )
     parser.add_argument(
         "--process",
         type=Path,
         metavar="WAV",
-        help="reprocess a saved recording instead of running the daemon",
+        help="transcribe a saved recording instead of running the daemon",
     )
     parser.add_argument("--title", help="lecture title to use with --process")
     parser.add_argument("-v", "--verbose", action="store_true")

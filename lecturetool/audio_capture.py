@@ -53,8 +53,8 @@ class LoopbackRecorder:
 
     Paused time is simply not written, so a lecture paused for five minutes
     produces a transcript with no five-minute silent gap. That means WAV
-    position is "audio time", not wall-clock time — which is what we want the
-    note timestamps to reflect.
+    position is "audio time", not wall-clock time — which is what the transcript
+    timestamps need to reflect to stay usable as seek positions.
     """
 
     def __init__(self, path: Path) -> None:
@@ -193,7 +193,8 @@ class LoopbackRecorder:
         """Insert silence for time that elapsed but produced no frames.
 
         Keeps WAV position equal to elapsed playback time, so a `[MM:SS]` in
-        the notes points at the same moment in the video. Caller holds the lock.
+        the transcript points at the same moment in the video. Caller holds the
+        lock.
         """
         deficit = self._elapsed_active_sec() - (self._frames_written / self._sample_rate)
         if deficit < _DRIFT_PAD_THRESHOLD_SEC:
@@ -285,12 +286,6 @@ class LoopbackRecorder:
 
     def looks_silent(self) -> bool:
         return self._peak_rms < SILENCE_RMS_THRESHOLD
-
-
-def wav_duration(path: Path) -> float:
-    with wave.open(str(path), "rb") as wf:
-        rate = wf.getframerate()
-        return wf.getnframes() / rate if rate else 0.0
 
 
 def _test(seconds: int, out: Path) -> int:

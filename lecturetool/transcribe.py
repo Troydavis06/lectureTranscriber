@@ -2,8 +2,13 @@
 
 Run as a subprocess (`python -m lecturetool.transcribe in.wav outdir`). That is
 deliberate: CTranslate2 does not reliably hand VRAM back to the OS within a
-live process, and the note-generation LLM needs that VRAM next. Process exit is
-the only guarantee, so the daemon always shells out rather than importing this.
+live process, so a long-lived daemon that imported this would hold a model's
+worth of VRAM between lectures. Process exit is the only guarantee, and it also
+means a crash inside the CUDA stack cannot take the daemon down with it.
+
+This is the stage that writes the finished transcript, so the files look the
+same whether a lecture was captured automatically or a WAV was handed over by
+hand.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from . import cuda_paths
@@ -141,24 +147,24 @@ def transcribe_file(wav: Path, cfg) -> Transcript:
     return transcript
 
 
-def write_outputs(transcript: Transcript, outdir: Path, slug: str) -> tuple[Path, Path]:
-    outdir.mkdir(parents=True, exist_ok=True)
-    json_path = outdir / f"{slug}.json"
-    text_path = outdir / f"{slug}.txt"
-    json_path.write_text(
-        json.dumps(transcript.to_json(), indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    text_path.write_text(transcript.to_timestamped_text(), encoding="utf-8")
-    return json_path, text_path
-
-
 def main() -> int:
     from . import config as config_mod
+    from .util import slug_title, wav_duration
+    from .writer import LectureMeta, write_transcript
 
     parser = argparse.ArgumentParser(description="Transcribe a recording")
     parser.add_argument("wav", type=Path)
     parser.add_argument("outdir", type=Path, nargs="?")
     parser.add_argument("--slug", help="output basename (defaults to the wav stem)")
+    parser.add_argument("--title", help="lecture title for the transcript header")
+    parser.add_argument("--url", default="", help="source URL for the header")
+    parser.add_argument("--recorded-at", help="ISO timestamp (defaults to the wav mtime)")
+    parser.add_argument(
+        "--offset",
+        type=float,
+        default=0.0,
+        help="seconds into the video that the recording began",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     setup_logging(args.verbose)
@@ -176,10 +182,24 @@ def main() -> int:
         log.error("No speech found in %s", args.wav.name)
         return 2
 
-    json_path, text_path = write_outputs(transcript, outdir, slug)
-    log.info("Wrote %s and %s", json_path.name, text_path.name)
+    if args.offset >= 1.0:
+        log.info("Shifting timestamps by +%.0fs to match video position", args.offset)
+        transcript.shift(args.offset)
+
+    recorded_at = (
+        datetime.fromisoformat(args.recorded_at)
+        if args.recorded_at
+        else datetime.fromtimestamp(args.wav.stat().st_mtime)
+    )
+    meta = LectureMeta(
+        title=args.title or slug_title(slug),
+        url=args.url,
+        duration_sec=wav_duration(args.wav),
+        recorded_at=recorded_at,
+    )
+    text_path, _ = write_transcript(outdir, slug, meta, transcript)
     # The daemon reads this line to locate the transcript without guessing.
-    print(json_path)
+    print(text_path)
     return 0
 
 

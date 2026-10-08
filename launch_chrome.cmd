@@ -1,5 +1,5 @@
 @echo off
-rem Launch Chrome with the DevTools debugging port open so the lecture tool can
+rem Launch Chrome with the DevTools debugging port open so the transcriber can
 rem see which tab is playing a video.
 rem
 rem Chrome 136+ deliberately refuses --remote-debugging-port when running on the
