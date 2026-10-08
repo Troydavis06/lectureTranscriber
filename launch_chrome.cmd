@@ -18,7 +18,7 @@ if not exist "%CHROME%" (
   exit /b 1
 )
 
-set "PROFILE=%LOCALAPPDATA%\lectureSummaryTool\chrome-profile"
+set "PROFILE=%LOCALAPPDATA%\lectureTranscriber\chrome-profile"
 
 rem This port must match chrome.debug_port in config.toml, which is what the
 rem daemon connects to. 9222 is the default on both sides.
