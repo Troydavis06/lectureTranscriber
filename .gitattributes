@@ -1,0 +1,5 @@
+# Normalise line endings so a clone from either platform produces the same
+# diffs. Batch files keep CRLF, which is what cmd.exe expects.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.wav binary

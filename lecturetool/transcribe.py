@@ -158,7 +158,10 @@ def main() -> int:
     parser.add_argument("--slug", help="output basename (defaults to the wav stem)")
     parser.add_argument("--title", help="lecture title for the transcript header")
     parser.add_argument("--url", default="", help="source URL for the header")
-    parser.add_argument("--recorded-at", help="ISO timestamp (defaults to the wav mtime)")
+    parser.add_argument(
+        "--recorded-at",
+        help="ISO timestamp (defaults to the slug's own stamp, then the wav mtime)",
+    )
     parser.add_argument(
         "--offset",
         type=float,
