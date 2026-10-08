@@ -29,6 +29,7 @@ from .util import (
     fmt_duration,
     fmt_timestamp,
     setup_logging,
+    slug_recorded_at,
     slug_title,
     stamped_slug,
     wav_duration,
@@ -328,7 +329,8 @@ def process_one(cfg, wav: Path, title: str | None) -> int:
         title=title or slug_title(wav.stem),
         url="",
         duration_sec=wav_duration(wav),
-        recorded_at=datetime.fromtimestamp(wav.stat().st_mtime),
+        recorded_at=slug_recorded_at(wav.stem)
+        or datetime.fromtimestamp(wav.stat().st_mtime),
     )
     result = Pipeline(cfg).process(Job(wav=wav, slug=wav.stem, meta=meta))
     return 0 if result is not None else 1

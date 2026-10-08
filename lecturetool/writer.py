@@ -43,13 +43,17 @@ def format_transcript(meta: LectureMeta, transcript: "Transcript") -> str:
 
 def transcript_json(meta: LectureMeta, transcript: "Transcript") -> dict:
     """The JSON form, which carries the lecture metadata the text header shows."""
-    return {
+    payload = {
         "title": meta.title,
         "url": meta.url,
         "recorded_at": meta.recorded_at.isoformat(timespec="seconds"),
-        "duration_sec": round(meta.duration_sec, 2),
         **transcript.to_json(),
     }
+    # Prefer the recorded length over Whisper's view of the file: they agree to
+    # within a rounding error, and this is the number the text header shows.
+    if meta.duration_sec:
+        payload["duration_sec"] = round(meta.duration_sec, 2)
+    return payload
 
 
 def _write_atomic(path: Path, text: str) -> None:

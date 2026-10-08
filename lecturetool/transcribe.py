@@ -71,7 +71,7 @@ class Transcript:
     def to_json(self) -> dict:
         return {
             "source": self.source,
-            "duration": self.duration,
+            "duration_sec": round(self.duration, 2),
             "language": self.language,
             "segments": self.segments,
         }
@@ -80,7 +80,7 @@ class Transcript:
     def from_json(cls, data: dict) -> "Transcript":
         return cls(
             source=data.get("source", ""),
-            duration=float(data.get("duration", 0.0)),
+            duration=float(data.get("duration_sec", 0.0)),
             language=data.get("language", "en"),
             segments=list(data.get("segments", [])),
         )
@@ -149,7 +149,7 @@ def transcribe_file(wav: Path, cfg) -> Transcript:
 
 def main() -> int:
     from . import config as config_mod
-    from .util import slug_title, wav_duration
+    from .util import slug_recorded_at, slug_title, wav_duration
     from .writer import LectureMeta, write_transcript
 
     parser = argparse.ArgumentParser(description="Transcribe a recording")
@@ -189,7 +189,7 @@ def main() -> int:
     recorded_at = (
         datetime.fromisoformat(args.recorded_at)
         if args.recorded_at
-        else datetime.fromtimestamp(args.wav.stat().st_mtime)
+        else slug_recorded_at(slug) or datetime.fromtimestamp(args.wav.stat().st_mtime)
     )
     meta = LectureMeta(
         title=args.title or slug_title(slug),

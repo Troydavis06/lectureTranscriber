@@ -16,6 +16,7 @@ from lecturetool.util import (
     clean_title,
     fmt_duration,
     fmt_timestamp,
+    slug_recorded_at,
     slug_title,
     slugify,
     stamped_slug,
@@ -63,6 +64,15 @@ check("round trip", slug_title("2026-09-16_1430_lecture-7-dynamic-programming"),
 check("hand-named kept", slug_title("my-own-recording"), "my-own-recording")
 check("stamp only kept", slug_title("2026-09-16_1430"), "2026-09-16_1430")
 
+print("slug_recorded_at")
+check("stamp parsed", slug_recorded_at("2026-09-16_1430_lecture-7"),
+      datetime(2026, 9, 16, 14, 30))
+check("hand-named has no stamp", slug_recorded_at("my-own-recording"), None)
+check("malformed stamp rejected", slug_recorded_at("2026-13-45_9999_x"), None)
+check("round trips with stamped_slug",
+      slug_recorded_at(stamped_slug("Lecture 7", datetime(2026, 9, 16, 14, 30))),
+      datetime(2026, 9, 16, 14, 30))
+
 print("transcript shift")
 from lecturetool.transcribe import Transcript  # noqa: E402 - keeps cuda import late
 
@@ -93,6 +103,7 @@ t = sample()
 check("text joins segments", t.text, "first line second line")
 check("word count", t.word_count, 4)
 check("reloaded segments", Transcript.from_json(t.to_json()).segments, t.segments)
+check("reloaded duration", Transcript.from_json(t.to_json()).duration, 10.0)
 
 print("format_transcript")
 meta = LectureMeta(
@@ -118,7 +129,13 @@ payload = transcript_json(meta, sample())
 check("title", payload["title"], "Lecture 7 - Dynamic Programming")
 check("recorded_at iso", payload["recorded_at"], "2026-09-16T14:30:00")
 check("duration", payload["duration_sec"], 3120)
+check("one duration key only", sorted(k for k in payload if "duration" in k), ["duration_sec"])
 check("segments kept", len(payload["segments"]), 2)
+
+unknown_length = LectureMeta(title="Lecture 9", url="", duration_sec=0.0,
+                             recorded_at=datetime(2026, 9, 20, 11, 0))
+check("falls back to the transcribed length",
+      transcript_json(unknown_length, sample())["duration_sec"], 10.0)
 
 print("write_transcript")
 with tempfile.TemporaryDirectory() as tmp:

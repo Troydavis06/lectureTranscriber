@@ -48,6 +48,21 @@ def stamped_slug(title: str, when: datetime | None = None) -> str:
     return f"{when:%Y-%m-%d_%H%M}_{slugify(title)}"
 
 
+def slug_recorded_at(slug: str) -> datetime | None:
+    """The `2026-09-16_1430` stamp a slug opens with, if it has one.
+
+    Preferred over the WAV's mtime, which is when recording *finished* and so
+    reads minutes or hours after the lecture actually started.
+    """
+    parts = slug.split("_")
+    if len(parts) < 2:
+        return None
+    try:
+        return datetime.strptime(f"{parts[0]}_{parts[1]}", "%Y-%m-%d_%H%M")
+    except ValueError:
+        return None
+
+
 def slug_title(slug: str) -> str:
     """Best-effort title from a stamped slug, for when none was supplied.
 
